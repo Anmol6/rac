@@ -1,4 +1,6 @@
 data/
+runs/
+exp/
 *.py.swp
 *.swp
 __pycache__/
