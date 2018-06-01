@@ -16,10 +16,15 @@ from matplotlib.pyplot import plot, draw, show
 writer = SummaryWriter()
 from sklearn import decomposition
 from mpl_toolkits.mplot3d import Axes3D
-
+from env import mControl
+import time
 #Simulation parameters
-
-
+ob_pos=10.0
+goal_pos=20.0
+ob_vel=0.0
+mass=10.0
+discount=0.9
+render=True
 #============================================================================================#
 # Utilities
 #============================================================================================#
@@ -70,11 +75,17 @@ def build_mlp(
     print('mixing: ' + str(mix))
     if mix==False:
         with tf.variable_scope(scope):
+            #w = tf.get_variable('w', [2,1])
+            w = tf.Variable(np.array([[100,200]]).reshape(2,1), dtype=tf.float32)
+            #b = tf.get_variable('b', [1,1])
+            out = -tf.matmul(input_placeholder,w) #+ b
+            '''
             l = x
             for i in range(n_layers):
                 l = tf.layers.dense(l, size, name='l'+str(i+1), activation=activation)
             out = tf.layers.dense(l, output_size, activation=output_activation, name='out')
-        return out
+            '''
+        return out,w
 
     with tf.variable_scope(scope):
         with tf.variable_scope('mixing_network'):
@@ -166,13 +177,13 @@ def train_PG(exp_name='',
     np.random.seed(seed)
 
     # Make the gym environment
-    env = gym.make(env_name)
-    
+    #env = gym.make(env_name)
+    env = mControl(goal_pos=goal_pos, ob_pos=ob_pos, ob_vel=ob_vel, render=render)
     # Is this env continuous, or discrete?
-    discrete = isinstance(env.action_space, gym.spaces.Discrete)
+    discrete = False#isinstance(env.action_space, gym.spaces.Discrete)
 
     # Maximum length for episodes
-    max_path_length = max_path_length or env.spec.max_episode_steps
+    max_path_length = max_path_length #or env.spec.max_episode_steps
 
     #========================================================================================#
     # Notes on notation:
@@ -192,8 +203,8 @@ def train_PG(exp_name='',
     #========================================================================================#
 
     # Observation and action sizes
-    ob_dim = env.observation_space.shape[0]
-    ac_dim = env.action_space.n if discrete else env.action_space.shape[0]
+    ob_dim = 2 #env.observation_space.shape[0]
+    ac_dim = 1 #env.action_space.n if discrete else env.action_space.shape[0]
 
     #========================================================================================#
     #                           ----------SECTION 4----------
@@ -269,7 +280,7 @@ def train_PG(exp_name='',
         if mix==True:
             sy_policy_output, wp,ww, bp,bw, mixing_weights = build_mlp(sy_ob_no, ac_dim, ob_dim, n_layers=n_layers,mix=mix)
         else:
-            sy_policy_output = build_mlp(sy_ob_no, ac_dim, ob_dim, n_layers=n_layers,mix=mix)
+            sy_policy_output, weights = build_mlp(sy_ob_no, ac_dim, ob_dim, n_layers=n_layers,mix=mix)
     if discrete:
         # YOUR_CODE_HERE
         sy_logits_na = sy_policy_output
@@ -351,7 +362,7 @@ def train_PG(exp_name='',
     #========================================================================================#
     #ipdb.set_trace()
     total_timesteps = 0
-    #ipdb.set_trace()
+    weight_list=[]
     for itr in range(n_iter):
         print("********** Iteration %i ************"%itr)
         
@@ -385,7 +396,8 @@ def train_PG(exp_name='',
                 #ax.scatter(ob_pca[:,0],ob_pca[:,1],ob_pca[:,2], c=(np.array(mw_buffer)),s=50)
                 draw()
                 show()
-
+            if(itr==6):
+                ipdb.set_trace()
             ob = env.reset()
             mw_buffer = []
             ob_buffer = []
@@ -398,6 +410,7 @@ def train_PG(exp_name='',
                 if animate_this_episode:
                     env.render()
                     time.sleep(0.05)
+                
                 obs.append(ob)
                 if len_control is not None:
                     if(curr_control_len%len_control==0):
@@ -414,7 +427,9 @@ def train_PG(exp_name='',
                     if(mix==True):
                         ac, mw_l = sess.run([sy_sampled_ac,mixing_weights], feed_dict={sy_ob_no : ob[None]})
                     else:
-                        ac = sess.run(sy_sampled_ac, feed_dict={sy_ob_no : ob[None]})
+                        #ipdb.set_trace()
+                        ob=ob.reshape(1,ob_dim)
+                        ac = sess.run(sy_sampled_ac, feed_dict={sy_ob_no : ob})
                 
                 ac = ac[0]
                 if(mix==True):
@@ -424,12 +439,15 @@ def train_PG(exp_name='',
                 acs.append(ac)
                 #ipdb.set_trace()
                 ob, rew, done, _ = env.step(ac)
+                ob[0,0]=ob[0,0]-goal_pos #ADDED
                 rewards.append(rew)
                 steps += 1
                 if done or steps > max_path_length:
                     break
-            
-            path = {"observation" : np.array(obs), 
+                    time.sleep(2)
+            #if(itr==1 or itr==0): 
+            #    ipdb.set_trace() 
+            path = {"observation" : np.squeeze(np.array(obs)), 
                     "reward" : np.array(rewards), 
                     "action" : np.array(acs),
                     "observation_controller": np.array(obs_controller)}
@@ -443,6 +461,8 @@ def train_PG(exp_name='',
         # across paths
         ob_no = np.concatenate([path["observation"] for path in paths])
         ac_na = np.concatenate([path["action"] for path in paths])
+        if len(ob_no.shape) is not 2:
+            ipdb.set_trace()
         if len_control is not None:
             ob_controller_no = np.concatenate([path["observation_controller"] for path in paths])
 
@@ -623,8 +643,12 @@ def train_PG(exp_name='',
                     show()
                 '''
             else:
-                _, loss_scalar  = sess.run([update_op, loss], feed_dict={sy_ob_no:ob_no, sy_ac_na: ac_na, sy_adv_n: adv_n})
+                #ipdb.set_trace()
+                _, loss_scalar, weights_  = sess.run([update_op, loss, weights], feed_dict={sy_ob_no:ob_no, sy_ac_na: ac_na, sy_adv_n: adv_n.reshape(-1,1)})
+                weight_list.append(weights_)
+        
         # Log diagnostics
+        print('curr_weights: ' + str(weights_))
         returns = [path["reward"].sum() for path in paths]
         ep_lengths = [pathlength(path) for path in paths]
         logz.log_tabular("Time", time.time() - start)
@@ -642,7 +666,7 @@ def train_PG(exp_name='',
             logz.log_tabular("expert1averageproportion", np.mean(mixing_weights_[:,0]))
         logz.dump_tabular()
         logz.pickle_tf_vars()
-        
+    np.save('exp/weights.npy', np.array(weight_list))   
 
 def main():
     import argparse
@@ -650,11 +674,11 @@ def main():
     parser.add_argument('--env_name', type=str)
     parser.add_argument('--exp_name', type=str, default='vpg')
     parser.add_argument('--render', action='store_true')
-    parser.add_argument('--discount', type=float, default=1.0)
-    parser.add_argument('--n_iter', '-n', type=int, default=300)
-    parser.add_argument('--batch_size', '-b', type=int, default=500)
-    parser.add_argument('--ep_len', '-ep', type=float, default=-1.)
-    parser.add_argument('--learning_rate', '-lr', type=float, default=5e-3)
+    parser.add_argument('--discount', type=float, default=0.9)
+    parser.add_argument('--n_iter', '-n', type=int, default=1000)
+    parser.add_argument('--batch_size', '-b', type=int, default=200)
+    parser.add_argument('--ep_len', '-ep', type=float, default=100000)
+    parser.add_argument('--learning_rate', '-lr', type=float, default=5e-1)
     parser.add_argument('--reward_to_go', '-rtg', action='store_true')
     parser.add_argument('--dont_normalize_advantages', '-dna', action='store_true')
     parser.add_argument('--nn_baseline', '-bl', action='store_true')
